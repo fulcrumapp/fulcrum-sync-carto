@@ -5,13 +5,14 @@ import Promise from 'bluebird';
 import Schema from 'fulcrum-schema/dist/schema';
 import sqldiff from 'sqldiff';
 import V2 from 'fulcrum-schema/dist/schemas/postgres-query-v2';
+import CartoValues from './carto-values';
 
 const {SchemaDiffer, Sqlite, Postgres} = sqldiff;
 
 const reqPromise = Promise.promisify(request);
 const req = (options) => reqPromise({forever: true, ...options});
 
-const RECORD_BATCH_SIZE = 1000;
+const STATEMENT_BATCH_SIZE = 500;
 
 export default class Carto extends Plugin {
   get enabled() {
@@ -36,6 +37,7 @@ export default class Carto extends Plugin {
         try {
           await this.updateForm(form, account, this.formVersion(form), null);
         } catch (ex) {
+          console.error(ex);
           // ignore errors
         }
 
@@ -48,7 +50,7 @@ export default class Carto extends Plugin {
             return;
           }
 
-          await this.run(statements.join('\n'));
+          const response = await this.run(statements.join('\n'));
 
           statements = [];
         };
@@ -62,7 +64,7 @@ export default class Carto extends Plugin {
 
           statements.push.apply(statements, recordStatements);
 
-          if (statements.length % 1000) {
+          if (statements.length % STATEMENT_BATCH_SIZE === 0) {
             await execStatementBatch();
           }
         });
@@ -110,14 +112,15 @@ export default class Carto extends Plugin {
   }
 
   tableName = (account, name) => {
-    return 'carto_' + account.rowID + '_' + name;
+    return 'account_' + account.rowID + '_' + name;
   }
 
   onFormSave = async ({form, account, oldForm, newForm}) => {
     await this.updateForm(form, account, oldForm, newForm);
   }
 
-  onRecordSave = ({record}) => {
+  onRecordSave = async ({record}) => {
+    await this.updateRecord(record);
     // this.log('record updated', record.displayValue);
   }
 
@@ -126,11 +129,14 @@ export default class Carto extends Plugin {
   }
 
   updateRecord = async (record) => {
-    await this.run(this.updateRecordStatements(record).join('\n'));
+    const statements = this.updateRecordStatements(record);
+
+    const response = await this.run(statements.join('\n'));
+    // console.log('RES', response.body);
   }
 
-  updateRecordStatements = async (record) => {
-    const statements = this.app.api.PostgresRecordValues.updateForRecordStatements(this.pgdb, record);
+  updateRecordStatements = (record) => {
+    const statements = CartoValues.updateForRecordStatements(this.pgdb, record);
 
     return statements.map(o => o.sql);
   }
@@ -144,22 +150,28 @@ export default class Carto extends Plugin {
 
     const {statements, newSchema} = await this.updateFormTableStatements(account, oldForm, newForm);
 
-    // const cartoConvertStatements = newSchema.tables.map((view) => {
-    //   return "select cdb_cartodbfytable('" + this.tableName(account, view.name) + "');";
-    // });
+    let cartoifyStatements = [];
 
-    const cartoConvertStatements = [];
+    if (newSchema) {
+      cartoifyStatements = newSchema.tables.map((view) => {
+        return "select cdb_cartodbfytable('" + this.tableName(account, view.name) + "');"
+      });
+    }
 
     const cartoStatements = [
       ...statements,
-      ...cartoConvertStatements
-    ];
-
-    console.log('CARTO', cartoStatements.join('\n'));
+      ...cartoifyStatements
+    ].filter((sql) => {
+      return sql.indexOf('CREATE OR REPLACE VIEW') === -1;
+    });
 
     const response = await this.run(cartoStatements.join('\n'));
+    // console.log(response.body);
+  }
 
-    console.log(response.body);
+  async cartoify(tableName) {
+    const response = await this.run("select cdb_cartodbfytable('" + tableName + "');");
+    // console.log(response.body);
   }
 
   async updateFormTableStatements(account, oldForm, newForm) {
@@ -178,7 +190,7 @@ export default class Carto extends Plugin {
 
     let generator = new Postgres(differ, {afterTransform: null});
 
-    generator.tablePrefix = 'carto_' + account.rowID + '_';
+    generator.tablePrefix = 'account_' + account.rowID + '_';
 
     const statements = generator.generate();
 
