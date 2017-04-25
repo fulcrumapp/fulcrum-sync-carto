@@ -1,0 +1,12 @@
+{
+  "name": "fulcrum-sync-custom-plugin",
+  "version": "1.0.0",
+  "main": "plugin.js",
+  "license": "MIT",
+  "dependencies": {
+    "bluebird": "^3.5.0",
+    "fulcrum-schema": "fulcrumapp/fulcrum-schema#v2",
+    "fulcrum-sync-plugin": "^1.0.1",
+    "request": "^2.81.0"
+  }
+}
